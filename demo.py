@@ -33,6 +33,8 @@ class HexApp:
         self.ai_loop_running = False
 
         self.cell_size = 48
+        self.col_spacing = 6
+        self.row_spacing = 6
         self.cells: Dict[CellKey, ft.Container] = {}
         self.cell_texts: Dict[CellKey, ft.Text] = {}
 
@@ -118,6 +120,20 @@ class HexApp:
             weight=ft.FontWeight.W_500,
             color="#3f4b62",
         )
+        self.legend_row = ft.Row(
+            spacing=10,
+            controls=[
+                ft.Container(width=12, height=12, bgcolor="#2d7dd2", border_radius=6),
+                ft.Text("Jugador 1 (X) - Azul", size=12, color="#3f4b62"),
+                ft.Container(width=12, height=12, bgcolor="#f45d01", border_radius=6),
+                ft.Text("Jugador 2 (O) - Naranja", size=12, color="#3f4b62"),
+            ],
+        )
+        self.scroll_hint = ft.Text(
+            "Scroll: rueda = vertical, Shift + rueda = horizontal",
+            size=11,
+            color="#6b7a90",
+        )
 
         controls = ft.Container(
             padding=20,
@@ -135,16 +151,33 @@ class HexApp:
                     self.time_slider,
                     self.start_btn,
                     self.hint_text,
+                    self.legend_row,
+                    self.scroll_hint,
                 ],
             ),
         )
 
         self.board_container = ft.Container(
-            padding=20,
+            content=ft.Column(spacing=8),
+        )
+        self.board_scroll_x = ft.Row(
+            controls=[self.board_container],
+            scroll=ft.ScrollMode.ALWAYS,
+            expand=True,
+        )
+        self.board_scroll_y = ft.Column(
+            controls=[self.board_scroll_x],
+            scroll=ft.ScrollMode.ALWAYS,
+            expand=True,
+        )
+        self.board_viewport = ft.Container(
+            padding=16,
             border_radius=16,
             bgcolor="#ffffff",
             shadow=ft.BoxShadow(blur_radius=16, color="#e3dccf"),
-            content=ft.Column(spacing=8),
+            content=self.board_scroll_y,
+            expand=True,
+            height=620,
         )
 
         info_bar = ft.Row(
@@ -168,7 +201,7 @@ class HexApp:
                     spacing=16,
                     controls=[
                         ft.Container(col={"sm": 12, "md": 4}, content=controls),
-                        ft.Container(col={"sm": 12, "md": 8}, content=self.board_container),
+                        ft.Container(col={"sm": 12, "md": 8}, content=self.board_viewport),
                     ],
                 ),
             ],
@@ -186,6 +219,7 @@ class HexApp:
             1: SmartPlayer(time_limit=self.time_limit),
             2: SmartPlayer(time_limit=self.time_limit),
         }
+        self.cell_size = self._compute_cell_size()
         self.ai_delay_s = self._calc_ai_delay_s()
         self.game_started = False
         self._stop_ai_loop()
@@ -201,8 +235,8 @@ class HexApp:
 
         rows = []
         indent_step = self.cell_size * 0.45
-        margin = 6  # Espacio igual al spacing entre celdas
-        
+        margin = self.row_spacing
+
         # Columnas para segmentos laterales
         left_segments = []
         right_segments = []
@@ -223,7 +257,7 @@ class HexApp:
                         border_radius=2,
                         margin=ft.Margin.only(bottom=margin),
                     ))
-                rows.append(ft.Row(top_row, spacing=6))
+                rows.append(ft.Row(top_row, spacing=self.col_spacing))
                 
                 # Segmento lateral para la línea naranja superior
                 left_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
@@ -254,7 +288,7 @@ class HexApp:
                 self.cells[(r, c)] = cell_content
                 self.cell_texts[(r, c)] = label
 
-            rows.append(ft.Row(row_controls, spacing=6))
+            rows.append(ft.Row(row_controls, spacing=self.col_spacing))
             
             # Segmento azul lateral para fila de celdas
             left_segments.append(ft.Container(
@@ -286,18 +320,18 @@ class HexApp:
                         border_radius=2,
                         margin=ft.Margin.only(top=margin),
                     ))
-                rows.append(ft.Row(bottom_row, spacing=6))
+                rows.append(ft.Row(bottom_row, spacing=self.col_spacing))
                 
                 # Segmento lateral para la línea naranja inferior
                 left_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
                 right_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
 
         # Board central sin indentación lateral
-        board_column = ft.Column(rows, spacing=6)
+        board_column = ft.Column(rows, spacing=self.row_spacing)
         
         # Columnas laterales alineadas con espaciado
-        left_column = ft.Column(left_segments, spacing=6)
-        right_column = ft.Column(right_segments, spacing=6)
+        left_column = ft.Column(left_segments, spacing=self.row_spacing)
+        right_column = ft.Column(right_segments, spacing=self.row_spacing)
 
         # Layout final: segmentos laterales + board + segmentos laterales
         board_with_sides = ft.Row(
@@ -307,6 +341,8 @@ class HexApp:
         )
 
         self.board_container.content = board_with_sides
+        self.board_container.width = self._board_total_width(indent_step, margin)
+        self.board_container.height = self._board_total_height(margin)
 
     def _update_board_view(self) -> None:
         for (r, c), cell in self.cells.items():
@@ -511,7 +547,7 @@ class HexApp:
             value = int(self.size_input.value)
         except (TypeError, ValueError):
             return
-        value = max(3, min(15, value))
+        value = max(3, min(30, value))
         self.size_input.value = str(value)
         if value != self.size:
             self.size = value
@@ -534,6 +570,39 @@ class HexApp:
     def _calc_ai_delay_s(self) -> float:
         """IA vs IA: intervalo ligeramente mayor que el tiempo de dificultad."""
         return float(self.time_limit) + 0.3
+
+    def _compute_cell_size(self) -> int:
+        min_cell = 22
+        max_cell = 72
+        n = max(3, self.size)
+        # Estimar área disponible para el tablero dentro de la ventana
+        win_w = float(self.page.window_width or 1100)
+        win_h = float(self.page.window_height or 760)
+        panel_w = 300
+        padding_w = 32
+        spacing = 12
+        board_area_w = max(320, win_w - panel_w - padding_w * 2 - spacing)
+        board_area_h = max(300, win_h - 180)
+
+        indent_factor = 0.45
+        width_candidate = (board_area_w - (n - 1) * self.col_spacing) / (n + indent_factor)
+        extra_border = 2 * (4 + self.row_spacing)
+        height_candidate = (board_area_h - (n - 1) * self.row_spacing - extra_border) / n
+
+        cell = min(width_candidate, height_candidate)
+        if cell <= 0:
+            cell = min_cell
+        cell = max(min_cell, min(max_cell, cell))
+        return int(cell)
+
+    def _board_total_width(self, indent_step: float, margin: float) -> float:
+        row_w = indent_step + self.size * self.cell_size + (self.size - 1) * self.col_spacing
+        side_w = 4 + margin
+        return row_w + side_w * 2
+
+    def _board_total_height(self, margin: float) -> float:
+        rows_count = self.size + 2
+        return self.size * self.cell_size + 2 * 4 + (rows_count - 1) * self.row_spacing + 2 * margin
 
 
 def main(page: ft.Page) -> None:
