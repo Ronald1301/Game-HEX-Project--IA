@@ -180,8 +180,11 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-#Carpetas
 
-#Archivos
-_orientacion.txt
-References_solution.py
+# Ignorar todo el proyecto excepto lo requerido
+*
+!/.gitignore
+!/README.md
+!/Orientación del primer proyecto de IA.pdf
+!/Ronald_Provance_Valladares/
+!/Ronald_Provance_Valladares/**
