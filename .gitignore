@@ -181,7 +181,7 @@ cython_debug/
 .cursorindexingignore
 
 #Carpetas
-DOCS/
 
 #Archivos
 _orientacion.txt
+References_solution.py
