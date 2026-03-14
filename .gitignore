@@ -181,5 +181,7 @@ cython_debug/
 .cursorindexingignore
 
 #Carpetas
-.LNCS Templates/
-._MACOSX/
+DOCS/
+
+#Archivos
+_orientacion.txt
