@@ -221,51 +221,27 @@ class HexApp:
         for r in range(self.size):
             row_controls = []
             
-            # Añadir línea naranja discontinua ARRIBA si es la primera fila
+            # Añadir línea naranja ARRIBA si es la primera fila
             if r == 0:
                 top_row = []
                 if r % 2 == 1:
                     top_row.append(ft.Container(width=indent_step))
                 for c in range(self.size):
-                    # Segmento discontinuo: mitad color, mitad transparente
-                    top_segment = ft.Row(
-                        [
-                            ft.Container(width=self.cell_size // 2, height=2, bgcolor="#f45d01", border_radius=1),
-                            ft.Container(width=self.cell_size // 2, height=2, bgcolor="transparent"),
-                        ],
-                        spacing=0,
-                    )
                     top_row.append(ft.Container(
-                        content=top_segment,
+                        width=self.cell_size,
+                        height=4,
+                        bgcolor="#f45d01",
+                        border_radius=2,
                         margin=ft.Margin.only(bottom=margin),
                     ))
                 rows.append(ft.Row(top_row, spacing=6))
+                
+                # Segmento lateral para la línea naranja superior
+                left_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
+                right_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
             
-            # Segmento azul discontinuo IZQUIERDO para esta fila
-            left_segment = ft.Row(
-                [
-                    ft.Container(width=2, height=self.cell_size // 2, bgcolor="#0d47a1", border_radius=1),
-                    ft.Container(width=2, height=self.cell_size // 2, bgcolor="transparent"),
-                ],
-                spacing=0,
-            )
-            left_segments.append(ft.Container(
-                content=left_segment,
-                margin=ft.Margin.only(right=margin),
-            ))
-            
-            # Segmento azul discontinuo DERECHO para esta fila
-            right_segment = ft.Row(
-                [
-                    ft.Container(width=2, height=self.cell_size // 2, bgcolor="#0d47a1", border_radius=1),
-                    ft.Container(width=2, height=self.cell_size // 2, bgcolor="transparent"),
-                ],
-                spacing=0,
-            )
-            right_segments.append(ft.Container(
-                content=right_segment,
-                margin=ft.Margin.only(left=margin),
-            ))
+            # Fila de celdas con segmentos azules laterales
+            row_controls = []
             
             if r % 2 == 1:
                 row_controls.append(ft.Container(width=indent_step))
@@ -291,6 +267,23 @@ class HexApp:
 
             rows.append(ft.Row(row_controls, spacing=6))
             
+            # Segmento azul lateral para fila de celdas
+            left_segments.append(ft.Container(
+                width=4,
+                height=self.cell_size,
+                bgcolor="#0d47a1",
+                border_radius=2,
+                margin=ft.Margin.only(right=margin),
+            ))
+            
+            right_segments.append(ft.Container(
+                width=4,
+                height=self.cell_size,
+                bgcolor="#0d47a1",
+                border_radius=2,
+                margin=ft.Margin.only(left=margin),
+            ))
+            
             # Añadir línea naranja ABAJO si es la última fila
             if r == self.size - 1:
                 bottom_row = []
@@ -305,13 +298,17 @@ class HexApp:
                         margin=ft.Margin.only(top=margin),
                     ))
                 rows.append(ft.Row(bottom_row, spacing=6))
+                
+                # Segmento lateral para la línea naranja inferior
+                left_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
+                right_segments.append(ft.Container(width=4, height=4 + margin, bgcolor="transparent"))
 
         # Board central sin indentación lateral
-        board_column = ft.Column(rows, spacing=0)
+        board_column = ft.Column(rows, spacing=6)
         
-        # Columnas laterales alineadas
-        left_column = ft.Column(left_segments, spacing=0)
-        right_column = ft.Column(right_segments, spacing=0)
+        # Columnas laterales alineadas con espaciado
+        left_column = ft.Column(left_segments, spacing=6)
+        right_column = ft.Column(right_segments, spacing=6)
 
         # Layout final: segmentos laterales + board + segmentos laterales
         board_with_sides = ft.Row(
