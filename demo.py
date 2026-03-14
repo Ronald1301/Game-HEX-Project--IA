@@ -2,6 +2,7 @@
 DEMO - Interfaz gráfica (Flet) para el juego HEX con MCTS
 """
 
+import asyncio
 import time
 import threading
 from typing import Dict, Tuple
@@ -27,17 +28,17 @@ class HexApp:
             1: SmartPlayer(time_limit=self.time_limit),
             2: SmartPlayer(time_limit=self.time_limit),
         }
-        self.autoplay = False
-        self.autoplay_ms = 800
-        self.autoplay_thread = None
-        self.autoplay_stop_event = threading.Event()
+        self.game_started = False
+        self.ai_delay_s = self._calc_ai_delay_s()
+        self.ai_loop_thread = None
+        self.ai_loop_stop_event = threading.Event()
 
         self.cell_size = 48
         self.cells: Dict[CellKey, ft.Container] = {}
         self.cell_texts: Dict[CellKey, ft.Text] = {}
 
-        self.status_text = ft.Text("", size=14, weight=ft.FontWeight.W_500)
-        self.turn_text = ft.Text("", size=14, weight=ft.FontWeight.W_500)
+        self.status_text = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color="#2d7dd2")
+        self.turn_text = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color="#1f2a44")
 
         self._build_ui()
         self._reset_game()
@@ -73,18 +74,20 @@ class HexApp:
                 ft.dropdown.Option("human_vs_ai", "Humano vs IA"),
                 ft.dropdown.Option("ai_vs_ai", "IA vs IA (paso a paso)"),
             ],
+            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_600, color="#1f2a44"),
+            label_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_600, color="#3f4b62"),
         )
         self.mode_dropdown.on_change = self._on_mode_change
 
-        self.size_slider = ft.Slider(
-            min=3,
-            max=9,
-            divisions=6,
-            label="{value}",
+        self.size_input = ft.TextField(
+            label="Tamaño del tablero (N)",
+            value=str(self.size),
             width=220,
-            value=self.size,
+            on_submit=self._on_size_submit,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            text_style=ft.TextStyle(size=14, weight=ft.FontWeight.W_600, color="#1f2a44"),
+            label_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_600, color="#3f4b62"),
         )
-        self.size_slider.on_change = self._on_size_change
 
         self.time_slider = ft.Slider(
             min=0.5,
@@ -96,39 +99,18 @@ class HexApp:
         )
         self.time_slider.on_change = self._on_time_change
 
-        self.speed_slider = ft.Slider(
-            min=200,
-            max=2000,
-            divisions=9,
-            label="{value} ms",
-            width=220,
-            value=self.autoplay_ms,
-        )
-        self.speed_slider.on_change = self._on_speed_change
-
-        self.new_game_btn = ft.Button(
-            "Nuevo juego",
-            on_click=self._on_new_game,
-            bgcolor="#1f2a44",
-            color="#f5f2eb",
-        )
-
-        self.autoplay_btn = ft.Button(
-            "Autoplay IA",
-            on_click=self._on_autoplay_toggle,
+        self.start_btn = ft.Button(
+            "Iniciar juego",
+            on_click=self._on_start_or_new,
             bgcolor="#2d7dd2",
             color="#f5f2eb",
         )
 
-        self.ai_step_btn = ft.OutlinedButton(
-            "Mover IA",
-            on_click=self._on_ai_step,
-        )
-
         self.hint_text = ft.Text(
             "Tip: en Humano vs IA, haces clic en una celda vacía.",
-            size=12,
-            color="#6b7a90",
+            size=13,
+            weight=ft.FontWeight.W_500,
+            color="#3f4b62",
         )
 
         controls = ft.Container(
@@ -139,17 +121,13 @@ class HexApp:
             content=ft.Column(
                 spacing=14,
                 controls=[
-                    ft.Text("Panel de control", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Text("Panel de control", size=18, weight=ft.FontWeight.BOLD, color="#1f2a44"),
                     self.mode_dropdown,
-                    ft.Text("Tamaño del tablero", size=12, color="#6b7a90"),
-                    self.size_slider,
-                    ft.Text("Tiempo por jugada (s)", size=12, color="#6b7a90"),
+                    ft.Text("Tamaño del tablero", size=13, weight=ft.FontWeight.W_500, color="#3f4b62"),
+                    self.size_input,
+                    ft.Text("Dificultad (tiempo IA)", size=13, weight=ft.FontWeight.W_500, color="#3f4b62"),
                     self.time_slider,
-                    ft.Text("Velocidad autoplay", size=12, color="#6b7a90"),
-                    self.speed_slider,
-                    self.new_game_btn,
-                    self.autoplay_btn,
-                    self.ai_step_btn,
+                    self.start_btn,
                     self.hint_text,
                 ],
             ),
@@ -165,9 +143,13 @@ class HexApp:
 
         info_bar = ft.Row(
             controls=[
-                self.turn_text,
-                ft.Container(width=12),
-                self.status_text,
+                ft.Column(
+                    spacing=6,
+                    controls=[
+                        self.turn_text,
+                        self.status_text,
+                    ]
+                )
             ]
         )
 
@@ -198,12 +180,13 @@ class HexApp:
             1: SmartPlayer(time_limit=self.time_limit),
             2: SmartPlayer(time_limit=self.time_limit),
         }
-        self.autoplay = False
-        self._stop_autoplay()
-        self._sync_autoplay_button()
+        self.ai_delay_s = self._calc_ai_delay_s()
+        self.game_started = False
+        self._stop_ai_loop()
+        self._sync_start_button()
         self._build_board()
-        self._update_status("Listo para jugar.")
-        self._update_turn()
+        self._update_status("Presiona 'Iniciar juego' para comenzar.")
+        self._update_turn("Turno: -")
         self.page.update()
 
     def _build_board(self) -> None:
@@ -362,8 +345,55 @@ class HexApp:
                     return True
         return False
 
+    def _ai_move_with_delay(self) -> None:
+        """Ejecuta el movimiento de la IA de forma asincrónica"""
+        if not self.game_started or self.mode != "human_vs_ai":
+            return
+        # Lanzar la coroutine en el event loop de Flet
+        asyncio.create_task(self._ai_move_async())
+
+    async def _ai_move_async(self) -> None:
+        """Coroutine async para el movimiento de la IA"""
+        try:
+            if self._check_end():
+                return
+            player_id = self.current_player
+            player_obj = self.players[player_id]
+            
+            # Ejecutar la IA en un executor para no bloquear
+            loop = asyncio.get_event_loop()
+            start = time.time()
+            move = await loop.run_in_executor(None, player_obj.play, self.board)
+            elapsed = time.time() - start
+
+            if not self._make_move(move, player_id):
+                self._update_status("IA intentó movimiento inválido.")
+                self.page.update()
+                return
+
+            # Actualizar visual
+            self._update_board_view()
+            self._update_status(f"Turno del jugador 2 (O) completado ({elapsed:.2f}s)")
+            self.page.update()
+            
+            # Pequeña pausa
+            await asyncio.sleep(0.5)
+            
+            # Revisar si terminó el juego
+            if self._check_end():
+                self.page.update()
+                return
+            
+            # Actualizar turno del humano
+            self._update_turn("Turno: Jugador 1 (X) esperando movimiento...")
+            self._update_status("Tu turno. Haz clic en una celda.")
+            self.page.update()
+        except Exception as e:
+            self._update_status(f"Error: {str(e)}")
+            self.page.update()
+
     def _ai_move(self) -> None:
-        if self._check_end():
+        if not self.game_started or self._check_end():
             return
         player_id = self.current_player
         player_obj = self.players[player_id]
@@ -383,23 +413,28 @@ class HexApp:
         self._update_board_view()
         self._check_end()
 
-    # Autoplay threading control
-    def _start_autoplay(self) -> None:
-        self.autoplay_stop_event.clear()
-        self.autoplay_thread = threading.Thread(target=self._autoplay_loop, daemon=True)
-        self.autoplay_thread.start()
+    # IA vs IA loop
+    def _start_ai_loop(self) -> None:
+        self.ai_loop_stop_event.clear()
+        self.ai_loop_thread = threading.Thread(target=self._ai_loop, daemon=True)
+        self.ai_loop_thread.start()
 
-    def _stop_autoplay(self) -> None:
-        self.autoplay_stop_event.set()
-        if self.autoplay_thread:
-            self.autoplay_thread.join(timeout=1)
-            self.autoplay_thread = None
+    def _stop_ai_loop(self) -> None:
+        self.ai_loop_stop_event.set()
+        if self.ai_loop_thread:
+            self.ai_loop_thread.join(timeout=1)
+            self.ai_loop_thread = None
 
-    def _autoplay_loop(self) -> None:
-        while not self.autoplay_stop_event.is_set():
-            if self.autoplay:
-                self._on_timer_tick(None)
-            time.sleep(self.autoplay_ms / 1000.0)
+    def _ai_loop(self) -> None:
+        while not self.ai_loop_stop_event.is_set():
+            if not self.game_started or self.mode != "ai_vs_ai":
+                break
+            if self._check_end():
+                break
+            self._ai_move()
+            self._update_board_view()
+            self.page.update()
+            time.sleep(self.ai_delay_s)
 
     # UI helpers
     def _update_status(self, text: str) -> None:
@@ -416,96 +451,88 @@ class HexApp:
     # Events
     # -----------------------------
     def _on_cell_click(self, r: int, c: int) -> None:
-        if self.mode != "human_vs_ai":
+        if not self.game_started or self.mode != "human_vs_ai":
             return
         if self.current_player != 1:
             return
         if self.board.board[r][c] != 0:
             return
 
+        # Jugador 1 hace su movimiento
         if not self._make_move((r, c), 1):
             return
 
+        # Actualizar visual del tablero con animación
         self._update_board_view()
+        self._update_status("Turno del jugador 1 (X) completado")
+        self.page.update()
+        
+        # Revisar si terminó el juego
         if self._check_end():
             self.page.update()
             return
 
-        self._update_turn()
+        # Mostrar que la IA está pensando
+        self._update_turn("Turno: Jugador 2 (O) pensando...")
+        self._update_status("Esperando movimiento de IA...")
         self.page.update()
-        self._ai_move()
-        self.page.update()
+        
+        # Ejecutar la IA en un hilo separado - NO bloquear aquí
+        self._ai_move_with_delay()
 
-    def _on_new_game(self, e: ft.ControlEvent) -> None:
-        self._reset_game()
-
-    def _on_ai_step(self, e: ft.ControlEvent) -> None:
-        if self.mode == "human_vs_ai" and self.current_player == 1:
-            self._update_status("Es tu turno. Haz clic en el tablero.")
-            self.page.update()
-            return
-
-        self._ai_move()
-        self._update_board_view()
-        self.page.update()
+    def _on_start_or_new(self, e: ft.ControlEvent) -> None:
+        if not self.game_started:
+            self.game_started = True
+            self._sync_start_button()
+            if self.mode == "ai_vs_ai":
+                self._update_turn("Turno: Jugador 1 (X)")
+                self._update_status("IA vs IA en curso...")
+                self.page.update()
+                self._start_ai_loop()
+            else:
+                self._update_turn("Turno: Jugador 1 (X)")
+                self._update_status("Tu turno. Haz clic en una celda.")
+                self.page.update()
+        else:
+            self._reset_game()
 
     def _on_mode_change(self, e: ft.ControlEvent) -> None:
         self.mode = self.mode_dropdown.value
         if self.mode == "ai_vs_ai":
-            self._update_status("Modo IA vs IA. Usa 'Mover IA'.")
+            self._update_status("Modo IA vs IA. Presiona 'Iniciar juego'.")
         else:
             self._update_status("Modo Humano vs IA. Tu juegas primero.")
-            self.autoplay = False
-            self.timer.disabled = True
-            self._sync_autoplay_button()
+            self._stop_ai_loop()
+            self._sync_start_button()
         self.page.update()
 
-    def _on_size_change(self, e: ft.ControlEvent) -> None:
-        self.size = int(self.size_slider.value)
-        self._reset_game()
+    def _on_size_submit(self, e: ft.ControlEvent) -> None:
+        try:
+            value = int(self.size_input.value)
+        except (TypeError, ValueError):
+            return
+        value = max(3, min(15, value))
+        self.size_input.value = str(value)
+        if value != self.size:
+            self.size = value
+            self._reset_game()
 
     def _on_time_change(self, e: ft.ControlEvent) -> None:
         self.time_limit = float(self.time_slider.value)
+        self.ai_delay_s = self._calc_ai_delay_s()
         self._reset_game()
 
-    def _on_speed_change(self, e: ft.ControlEvent) -> None:
-        self.autoplay_ms = int(self.speed_slider.value)
-        self.page.update()
-
-    def _on_autoplay_toggle(self, e: ft.ControlEvent) -> None:
-        if self.mode != "ai_vs_ai":
-            self._update_status("Autoplay solo en modo IA vs IA.")
-            self.page.update()
-            return
-        self.autoplay = not self.autoplay
-        if self.autoplay:
-            self._start_autoplay()
+    def _sync_start_button(self) -> None:
+        if self.game_started:
+            self.start_btn.text = "Nuevo juego"
+            self.start_btn.bgcolor = "#1f2a44"
         else:
-            self._stop_autoplay()
-        self._sync_autoplay_button()
-        self.page.update()
+            self.start_btn.text = "Iniciar juego"
+            self.start_btn.bgcolor = "#2d7dd2"
 
-    def _sync_autoplay_button(self) -> None:
-        if self.autoplay:
-            self.autoplay_btn.text = "Pausar IA"
-        else:
-            self.autoplay_btn.text = "Autoplay IA"
-            self._stop_autoplay()
-
-    def _on_timer_tick(self, e: ft.ControlEvent) -> None:
-        if not self.autoplay:
-            return
-        if self._check_end():
-            self.autoplay = False
-            self._sync_autoplay_button()
-            self.page.update()
-            return
-        # En Humano vs IA, solo mover cuando es turno de la IA
-        if self.mode == "human_vs_ai" and self.current_player != 2:
-            return
-        self._ai_move()
-        self._update_board_view()
-        self.page.update()
+    def _calc_ai_delay_s(self) -> float:
+        """IA vs IA: intervalo ligeramente mayor que el tiempo de dificultad."""
+        return float(self.time_limit) + 0.3
 
 
 def main(page: ft.Page) -> None:
