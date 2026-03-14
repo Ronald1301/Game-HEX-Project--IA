@@ -4,7 +4,6 @@ DEMO - Interfaz gráfica (Flet) para el juego HEX con MCTS
 
 import asyncio
 import time
-import threading
 from typing import Dict, Tuple
 
 import flet as ft
@@ -30,8 +29,8 @@ class HexApp:
         }
         self.game_started = False
         self.ai_delay_s = self._calc_ai_delay_s()
-        self.ai_loop_thread = None
-        self.ai_loop_stop_event = threading.Event()
+        self.ai_loop_task: asyncio.Task | None = None
+        self.ai_loop_running = False
 
         self.cell_size = 48
         self.cells: Dict[CellKey, ft.Container] = {}
@@ -42,6 +41,13 @@ class HexApp:
 
         self._build_ui()
         self._reset_game()
+
+    def _is_ai_vs_ai_mode(self) -> bool:
+        value = str(self.mode).lower()
+        return value == "ai_vs_ai" or "ia vs ia" in value
+
+    def _is_human_vs_ai_mode(self) -> bool:
+        return not self._is_ai_vs_ai_mode()
 
     # -----------------------------
     # UI
@@ -347,94 +353,70 @@ class HexApp:
 
     def _ai_move_with_delay(self) -> None:
         """Ejecuta el movimiento de la IA de forma asincrónica"""
-        if not self.game_started or self.mode != "human_vs_ai":
+        if not self.game_started or not self._is_human_vs_ai_mode():
             return
-        # Lanzar la coroutine en el event loop de Flet
-        asyncio.create_task(self._ai_move_async())
+        asyncio.create_task(self._ai_move_async_for_human())
 
-    async def _ai_move_async(self) -> None:
-        """Coroutine async para el movimiento de la IA"""
-        try:
-            if self._check_end():
-                return
-            player_id = self.current_player
-            player_obj = self.players[player_id]
-            
-            # Ejecutar la IA en un executor para no bloquear
-            loop = asyncio.get_event_loop()
-            start = time.time()
-            move = await loop.run_in_executor(None, player_obj.play, self.board)
-            elapsed = time.time() - start
-
-            if not self._make_move(move, player_id):
-                self._update_status("IA intentó movimiento inválido.")
-                self.page.update()
-                return
-
-            # Actualizar visual
-            self._update_board_view()
-            self._update_status(f"Turno del jugador 2 (O) completado ({elapsed:.2f}s)")
-            self.page.update()
-            
-            # Pequeña pausa
-            await asyncio.sleep(0.5)
-            
-            # Revisar si terminó el juego
-            if self._check_end():
-                self.page.update()
-                return
-            
-            # Actualizar turno del humano
-            self._update_turn("Turno: Jugador 1 (X) esperando movimiento...")
-            self._update_status("Tu turno. Haz clic en una celda.")
-            self.page.update()
-        except Exception as e:
-            self._update_status(f"Error: {str(e)}")
-            self.page.update()
-
-    def _ai_move(self) -> None:
+    async def _ai_move_async(self) -> bool:
+        """Ejecuta un turno de IA sin bloquear la UI. Retorna False si termina la partida."""
         if not self.game_started or self._check_end():
-            return
+            return False
+
         player_id = self.current_player
         player_obj = self.players[player_id]
         self._update_status("IA pensando...")
         self.page.update()
 
+        loop = asyncio.get_running_loop()
         start = time.time()
-        move = player_obj.play(self.board)
+        move = await loop.run_in_executor(None, player_obj.play, self.board)
         elapsed = time.time() - start
 
         if not self._make_move(move, player_id):
             self._update_status("IA intentó movimiento inválido.")
-            return
+            self.page.update()
+            return False
 
+        self._update_board_view()
         self._update_status(f"IA movió en {move} ({elapsed:.2f}s)")
         self._update_turn()
-        self._update_board_view()
-        self._check_end()
+        self.page.update()
 
-    # IA vs IA loop
+        if self._check_end():
+            self.page.update()
+            return False
+
+        return True
+
+    async def _ai_move_async_for_human(self) -> None:
+        """Turno IA en modo humano vs IA."""
+        ok = await self._ai_move_async()
+        if not ok:
+            return
+        if self.game_started and self._is_human_vs_ai_mode():
+            self._update_turn("Turno: Jugador 1 (X)")
+            self._update_status("Tu turno. Haz clic en una celda.")
+            self.page.update()
+
+    # IA vs IA loop (async)
     def _start_ai_loop(self) -> None:
-        self.ai_loop_stop_event.clear()
-        self.ai_loop_thread = threading.Thread(target=self._ai_loop, daemon=True)
-        self.ai_loop_thread.start()
+        if self.ai_loop_task and not self.ai_loop_task.done():
+            return
+        self.ai_loop_running = True
+        self.ai_loop_task = asyncio.create_task(self._ai_loop_async())
 
     def _stop_ai_loop(self) -> None:
-        self.ai_loop_stop_event.set()
-        if self.ai_loop_thread:
-            self.ai_loop_thread.join(timeout=1)
-            self.ai_loop_thread = None
+        self.ai_loop_running = False
+        if self.ai_loop_task and not self.ai_loop_task.done():
+            self.ai_loop_task.cancel()
+        self.ai_loop_task = None
 
-    def _ai_loop(self) -> None:
-        while not self.ai_loop_stop_event.is_set():
-            if not self.game_started or self.mode != "ai_vs_ai":
+    async def _ai_loop_async(self) -> None:
+        while self.ai_loop_running and self.game_started and self._is_ai_vs_ai_mode():
+            ok = await self._ai_move_async()
+            if not ok:
                 break
-            if self._check_end():
-                break
-            self._ai_move()
-            self._update_board_view()
-            self.page.update()
-            time.sleep(self.ai_delay_s)
+            await asyncio.sleep(self.ai_delay_s)
 
     # UI helpers
     def _update_status(self, text: str) -> None:
@@ -451,7 +433,7 @@ class HexApp:
     # Events
     # -----------------------------
     def _on_cell_click(self, r: int, c: int) -> None:
-        if not self.game_started or self.mode != "human_vs_ai":
+        if not self.game_started or not self._is_human_vs_ai_mode():
             return
         if self.current_player != 1:
             return
@@ -481,10 +463,12 @@ class HexApp:
         self._ai_move_with_delay()
 
     def _on_start_or_new(self, e: ft.ControlEvent) -> None:
+        # Asegurar que usamos el valor actual del dropdown
+        self.mode = self.mode_dropdown.value
         if not self.game_started:
             self.game_started = True
             self._sync_start_button()
-            if self.mode == "ai_vs_ai":
+            if self._is_ai_vs_ai_mode():
                 self._update_turn("Turno: Jugador 1 (X)")
                 self._update_status("IA vs IA en curso...")
                 self.page.update()
@@ -498,12 +482,28 @@ class HexApp:
 
     def _on_mode_change(self, e: ft.ControlEvent) -> None:
         self.mode = self.mode_dropdown.value
-        if self.mode == "ai_vs_ai":
+        if self._is_ai_vs_ai_mode():
+            if self.game_started:
+                self._update_turn("Turno: Jugador 1 (X)")
+                self._update_status("IA vs IA en curso...")
+                self.page.update()
+                self._start_ai_loop()
+                return
             self._update_status("Modo IA vs IA. Presiona 'Iniciar juego'.")
+            self._update_turn("Turno: -")
         else:
             self._update_status("Modo Humano vs IA. Tu juegas primero.")
             self._stop_ai_loop()
             self._sync_start_button()
+            if self.game_started:
+                if self.current_player == 1:
+                    self._update_turn("Turno: Jugador 1 (X)")
+                    self._update_status("Tu turno. Haz clic en una celda.")
+                else:
+                    self._update_turn("Turno: Jugador 2 (O)")
+                    self._update_status("IA pensando...")
+                    self.page.update()
+                    self._ai_move_with_delay()
         self.page.update()
 
     def _on_size_submit(self, e: ft.ControlEvent) -> None:
@@ -524,11 +524,12 @@ class HexApp:
 
     def _sync_start_button(self) -> None:
         if self.game_started:
-            self.start_btn.text = "Nuevo juego"
+            self.start_btn.content = "Nuevo juego"
             self.start_btn.bgcolor = "#1f2a44"
         else:
-            self.start_btn.text = "Iniciar juego"
+            self.start_btn.content = "Iniciar juego"
             self.start_btn.bgcolor = "#2d7dd2"
+        self.start_btn.update()
 
     def _calc_ai_delay_s(self) -> float:
         """IA vs IA: intervalo ligeramente mayor que el tiempo de dificultad."""
